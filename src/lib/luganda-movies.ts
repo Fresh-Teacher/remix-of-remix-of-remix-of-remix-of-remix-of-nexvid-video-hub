@@ -151,10 +151,46 @@ export function listVjs(): VjSummary[] {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
-export function getFeaturedLugandaCatalog(limit: number): LugandaMovie[] {
+/** Deterministic PRNG so one rotation window serves the same picks everywhere. */
+export function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function seededShuffle<T>(list: T[], seed: number): T[] {
+  const rand = seededRandom(seed);
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j] as T, out[i] as T];
+  }
+  return out;
+}
+
+/** Changes every few hours so the homepage rotates without flickering on each visit. */
+export function rotationSeed(now = Date.now(), hours = 3): number {
+  return Math.floor(now / (hours * 3_600_000));
+}
+
+/** A rotating pick of a VJ's titles, drawn from its newest pool of releases. */
+export function getRotatingVjPicks(vj: string, count: number, seed: number, pool = 40): LugandaMovie[] {
+  const unique = uniqueSorted(vj === "all" ? movies : movies.filter((m) => m.vj === vj));
+  return seededShuffle(unique.slice(0, pool), seed + vj.length * 7919).slice(0, count);
+}
+
+export function getFeaturedLugandaCatalog(limit: number, seed?: number): LugandaMovie[] {
   const queues = listVjs()
     .slice(0, 6)
-    .map((v) => uniqueSorted(movies.filter((m) => m.vj === v.name)));
+    .map((v) => {
+      const list = uniqueSorted(movies.filter((m) => m.vj === v.name));
+      return seed === undefined ? list : seededShuffle(list.slice(0, 40), seed + v.name.length);
+    });
   const seen = new Set<string>();
   const out: LugandaMovie[] = [];
   let round = 0;

@@ -4,7 +4,10 @@ import {
   catalogKey,
   cleanLugandaTitle,
   getFeaturedLugandaCatalog,
+  getRotatingVjPicks,
   getVjCatalog,
+  rotationSeed,
+  seededRandom,
   listVjs,
   type LugandaMovie,
 } from "./luganda-movies";
@@ -22,6 +25,7 @@ export type MediaCardData = {
   overview: string;
   lugandaVj?: string;
   genreIds?: number[];
+  popularity?: number;
 };
 export type MediaDetail = MediaCardData & {
   genres: string[];
@@ -59,6 +63,7 @@ function toCard(r: any, fallback?: MediaKind): MediaCardData | null {
     year: (r.release_date ?? r.first_air_date ?? "").slice(0, 4),
     rating: Math.round((r.vote_average ?? 0) * 10) / 10,
     overview: r.overview ?? "",
+    popularity: r.popularity ?? 0,
     genreIds: r.genre_ids ?? (r.genres ?? []).map((genre: { id: number }) => genre.id),
   };
 }
@@ -141,9 +146,20 @@ function translatedGenreItems(index: Map<string, MediaCardData>, genreId: number
 
 const GENRE_SCAN_PAGE = 24;
 
+/** Popularity-led order with seeded jitter, so big titles lead but shelves rotate. */
+export function rankByPopularity<T extends { popularity?: number; rating: number }>(items: T[], seed: number): T[] {
+  const rand = seededRandom(seed);
+  return items
+    .map((item) => ({ item, score: Math.log1p(item.popularity ?? 0) + item.rating / 10 + rand() * 1.5 }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ item }) => item);
+}
+
 export const getHome = createServerFn({ method: "GET" }).handler(async () => {
   const vjs = listVjs();
-  const featuredEntries = getFeaturedLugandaCatalog(14);
+  const seed = rotationSeed();
+  const featuredEntries = getFeaturedLugandaCatalog(14, seed);
+  const vjPicks = new Map(vjs.map((vj) => [vj.name, getRotatingVjPicks(vj.name, 12, seed)]));
   const lists: [string, Promise<any>, MediaKind | undefined][] = [
     ...getAllCategories().flatMap((category) => category.source.type === "tmdb-list"
       ? [[category.title, tmdb(category.source.path), category.source.kind] as [string, Promise<any>, MediaKind | undefined]]
@@ -153,7 +169,7 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
   const allEntries = getVjCatalog("all", 0, Number.MAX_SAFE_INTEGER).items;
   const homeEntries = [
     ...featuredEntries,
-    ...vjs.flatMap((vj) => getVjCatalog(vj.name, 0, 12).items),
+    ...[...vjPicks.values()].flat(),
   ];
   const [index, results] = await Promise.all([
     resolveEntries(homeEntries),
@@ -168,14 +184,14 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
       return [{ ...card, lugandaVj: entry.vj }];
     });
   };
-  const lugandaItems = fromCatalog(featuredEntries);
+  const lugandaItems = rankByPopularity(fromCatalog(featuredEntries), seed);
   const vjResolved = vjs.map((vj) => ({
     title: vj.name,
-    items: fromCatalog(getVjCatalog(vj.name, 0, Number.MAX_SAFE_INTEGER).items).slice(0, 12),
+    items: rankByPopularity(fromCatalog(vjPicks.get(vj.name) ?? []), seed + 1),
   }));
   const translatedGenres = getAllCategories().flatMap((category) =>
     category.source.type === "luganda-genre"
-      ? [{ title: category.title, items: translatedGenreItems(index, category.source.genreId, allEntries).slice(0, 12) }]
+      ? [{ title: category.title, items: rankByPopularity(translatedGenreItems(index, category.source.genreId, allEntries), seed + 2).slice(0, 12) }]
       : []);
   const tmdbRows = lists
     .map(([title, , k], i) => ({ title, items: cards(results[i]?.results ?? [], k) }))

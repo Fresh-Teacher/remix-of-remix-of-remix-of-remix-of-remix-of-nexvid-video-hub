@@ -86,7 +86,7 @@ function Home() {
   }, [emblaApi, focused, heroes.length, hovered, interacting, reduceMotion]);
 
   return (
-    <div className="pb-20">
+    <div className="pb-20 pt-16">
       {heroes.length > 0 && (
         <section
           aria-label="Featured movies and series"
@@ -117,7 +117,7 @@ function Home() {
                     aria-roledescription="slide"
                     aria-label={`${index + 1} of ${heroes.length}: ${hero.title}`}
                     aria-hidden={index !== selectedIndex}
-                    className="relative min-h-[85vh] min-w-0 flex-[0_0_100%]"
+                    className="relative min-h-[calc(85vh-4rem)] min-w-0 flex-[0_0_100%]"
                   >
                     <img
                       src={hero.backdrop ?? ""}
@@ -127,7 +127,7 @@ function Home() {
                       className="absolute inset-0 h-full w-full object-cover"
                     />
                     <div className="hero-fade absolute inset-0" />
-                    <div className="relative flex min-h-[85vh] max-w-2xl flex-col justify-end px-5 pb-24 sm:px-10">
+                    <div className="relative flex min-h-[calc(85vh-4rem)] max-w-2xl flex-col justify-end px-5 pb-24 sm:px-10">
                       <p className="text-xs font-semibold uppercase tracking-[0.25em] text-primary">
                         Trending this week
                       </p>

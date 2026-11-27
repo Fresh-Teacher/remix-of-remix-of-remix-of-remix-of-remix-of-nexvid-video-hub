@@ -44,7 +44,11 @@ export const Route = createFileRoute("/")({
 
 function Home() {
   const { data } = useSuspenseQuery(homeQuery);
-  const heroes = useMemo(() => featuredSlides(data.rows), [data.rows]);
+  const heroes = useMemo(() => {
+    const trending = data.rows.find((r) => r.title === "Trending now")?.items ?? [];
+    const live = trending.filter((m) => m.backdrop).slice(0, 7);
+    return live.length ? live : featuredSlides(data.rows);
+  }, [data.rows]);
   const rows = useMemo(() => homeRows(data.rows, heroes), [data.rows, heroes]);
   const lugandaRow = rows.find((r) => r.title === "Luganda Translated");
   const otherRows = rows.filter((r) => r.title !== "Luganda Translated");

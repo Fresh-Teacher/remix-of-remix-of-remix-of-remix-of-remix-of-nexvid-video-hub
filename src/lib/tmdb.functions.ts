@@ -203,7 +203,7 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
     ...tmdbRows,
   ];
   const trending = tmdbRows.find((r) => r.title === "Trending now")?.items ?? [];
-  const hero = lugandaItems.find((m) => m.backdrop) ?? trending.find((m) => m.backdrop) ?? null;
+  const hero = trending.find((m) => m.backdrop) ?? lugandaItems.find((m) => m.backdrop) ?? null;
   let heroTrailer: string | null = null;
   if (hero) {
     try {

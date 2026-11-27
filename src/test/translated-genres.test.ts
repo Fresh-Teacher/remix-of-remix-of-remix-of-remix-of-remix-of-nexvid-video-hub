@@ -38,7 +38,7 @@ describe("Translated genre paging", () => {
     expect(page?.items.some((movie) => movie.genreIds?.includes(35))).toBe(false);
   });
 
-  it("paginates translated genres in disjoint batches with an accurate total", async () => {
+  it("paginates translated genres in disjoint, on-demand batches", async () => {
     const { getCategoryPage } = await import("@/lib/tmdb.functions");
     const first = await getCategoryPage({ data: { slug: "translated-action-movies", page: 1 } });
     const second = await getCategoryPage({ data: { slug: "translated-action-movies", page: 2 } });
@@ -47,8 +47,7 @@ describe("Translated genre paging", () => {
     expect(second?.total).toBe(first?.total);
     const firstIds = new Set(first?.items.map((movie) => movie.id));
     expect(second?.items.some((movie) => firstIds.has(movie.id))).toBe(false);
-    const lastPage = Math.ceil((first?.total ?? 0) / 12);
-    const last = await getCategoryPage({ data: { slug: "translated-action-movies", page: lastPage } });
+    const last = await getCategoryPage({ data: { slug: "translated-action-movies", page: 500 } });
     expect(last?.nextPage).toBeNull();
   });
 });

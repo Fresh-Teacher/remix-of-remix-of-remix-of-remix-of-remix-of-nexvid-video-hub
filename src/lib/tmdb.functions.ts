@@ -102,8 +102,8 @@ async function resolveOneLuganda(entry: LugandaMovie): Promise<MediaCardData | n
 async function resolveLugandaBatch(entries: LugandaMovie[]): Promise<MediaCardData[]> {
   const out: MediaCardData[] = [];
   const seenIds = new Set<number>();
-  for (let i = 0; i < entries.length; i += 10) {
-    const resolved = await Promise.all(entries.slice(i, i + 10).map(resolveOneLuganda));
+  for (let i = 0; i < entries.length; i += 6) {
+    const resolved = await Promise.all(entries.slice(i, i + 6).map(resolveOneLuganda));
     for (const card of resolved) {
       if (!card || seenIds.has(card.id)) continue;
       seenIds.add(card.id);
@@ -113,43 +113,33 @@ async function resolveLugandaBatch(entries: LugandaMovie[]): Promise<MediaCardDa
   return out;
 }
 
-let translatedIndex: Promise<Map<string, MediaCardData>> | null = null;
-
-async function getTranslatedIndex(): Promise<Map<string, MediaCardData>> {
-  if (translatedIndex) return translatedIndex;
-  translatedIndex = (async () => {
-    const entries = getVjCatalog("all", 0, Number.MAX_SAFE_INTEGER).items;
-    const index = new Map<string, MediaCardData>();
-    let next = 0;
-    // Bound upstream concurrency and share one catalog resolution across all shelves.
-    await Promise.all(Array.from({ length: 16 }, async () => {
-      while (next < entries.length) {
-        const entry = entries[next++];
-        if (!entry) continue;
-        const card = await resolveOneLuganda(entry);
-        if (card) index.set(catalogKey(entry), card);
-      }
-    }));
-    return index;
-  })();
-  try {
-    return await translatedIndex;
-  } catch (error) {
-    translatedIndex = null;
-    throw error;
+// Resolve catalog entries with at most 6 upstream requests in flight. Only settled
+// values are cached globally (never pending promises), so requests stay isolated.
+async function resolveEntries(entries: LugandaMovie[]): Promise<Map<string, MediaCardData>> {
+  const out = new Map<string, MediaCardData>();
+  const unique = [...new Map(entries.map((e) => [catalogKey(e), e])).values()];
+  for (let i = 0; i < unique.length; i += 6) {
+    const chunk = unique.slice(i, i + 6);
+    const resolved = await Promise.all(chunk.map(resolveOneLuganda));
+    chunk.forEach((entry, j) => {
+      const card = resolved[j];
+      if (card) out.set(catalogKey(entry), card);
+    });
   }
+  return out;
 }
 
-function translatedGenreItems(index: Map<string, MediaCardData>, genreId: number) {
-  const entries = getVjCatalog("all", 0, Number.MAX_SAFE_INTEGER).items;
+function translatedGenreItems(index: Map<string, MediaCardData>, genreId: number, entries: LugandaMovie[]) {
   const seen = new Set<number>();
   return entries.flatMap((entry) => {
-    const card = index.get(catalogKey(entry));
+    const card = index.get(catalogKey(entry)) ?? lugandaTmdbCache.get(catalogKey(entry));
     if (!card?.genreIds?.includes(genreId) || seen.has(card.id)) return [];
     seen.add(card.id);
     return [card];
   });
 }
+
+const GENRE_SCAN_PAGE = 24;
 
 export const getHome = createServerFn({ method: "GET" }).handler(async () => {
   const vjs = listVjs();
@@ -160,8 +150,13 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
       : []),
     ...GENRES.map(([name, id]) => [name, tmdb("/discover/movie", { with_genres: String(id), sort_by: "popularity.desc" }), "movie"] as [string, Promise<any>, MediaKind]),
   ];
+  const allEntries = getVjCatalog("all", 0, Number.MAX_SAFE_INTEGER).items;
+  const homeEntries = [
+    ...featuredEntries,
+    ...vjs.flatMap((vj) => getVjCatalog(vj.name, 0, 12).items),
+  ];
   const [index, results] = await Promise.all([
-    getTranslatedIndex(),
+    resolveEntries(homeEntries),
     Promise.all(lists.map(([, p]) => p.catch(() => ({ results: [] })))),
   ]);
   const fromCatalog = (entries: LugandaMovie[]) => {
@@ -180,7 +175,7 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
   }));
   const translatedGenres = getAllCategories().flatMap((category) =>
     category.source.type === "luganda-genre"
-      ? [{ title: category.title, items: translatedGenreItems(index, category.source.genreId).slice(0, 12) }]
+      ? [{ title: category.title, items: translatedGenreItems(index, category.source.genreId, allEntries).slice(0, 12) }]
       : []);
   const tmdbRows = lists
     .map(([title, , k], i) => ({ title, items: cards(results[i]?.results ?? [], k) }))
@@ -255,15 +250,15 @@ export const getCategoryPage = createServerFn({ method: "GET" })
     if (!category) return null;
     const { source } = category;
     if (source.type === "luganda-genre") {
-      const all = translatedGenreItems(await getTranslatedIndex(), source.genreId);
-      const offset = (data.page - 1) * 12;
+      const { items: entries, hasMore } = getVjCatalog("all", (data.page - 1) * GENRE_SCAN_PAGE, GENRE_SCAN_PAGE);
+      const index = await resolveEntries(entries);
       return {
         slug: category.slug,
         title: category.title,
         description: category.description,
-        total: all.length,
-        items: all.slice(offset, offset + 12),
-        nextPage: offset + 12 < all.length ? data.page + 1 : null,
+        total: null,
+        items: translatedGenreItems(index, source.genreId, entries),
+        nextPage: hasMore ? data.page + 1 : null,
       };
     }
     if (source.type === "luganda-all" || source.type === "vj") {

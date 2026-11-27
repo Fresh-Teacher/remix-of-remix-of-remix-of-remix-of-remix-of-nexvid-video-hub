@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import useEmblaCarousel from "embla-carousel-react";
 import { ChevronLeft, ChevronRight, Play, Star } from "lucide-react";
 import { homeQuery } from "@/lib/home-query";
-import { homeRows } from "@/lib/media-browsing";
+import { featuredSlides, homeRows } from "@/lib/media-browsing";
 import { LandscapeRow } from "@/components/LandscapeCard";
 import { ExploreMoreGrid, VjFilterBar } from "@/components/HomeInfiniteGrid";
 
@@ -44,7 +44,7 @@ export const Route = createFileRoute("/")({
 
 function Home() {
   const { data } = useSuspenseQuery(homeQuery);
-  const heroes = data.heroes;
+  const heroes = useMemo(() => featuredSlides(data.rows), [data.rows]);
   const rows = useMemo(() => homeRows(data.rows, heroes), [data.rows, heroes]);
   const lugandaRow = rows.find((r) => r.title === "Luganda Translated");
   const otherRows = rows.filter((r) => r.title !== "Luganda Translated");

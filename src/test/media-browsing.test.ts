@@ -129,7 +129,7 @@ describe("Luganda catalog badges and VJ categories", () => {
     expect(getCategorySlugByTitle("VJ Junior")).toBe("vj-junior");
     expect(getCategorySlugByTitle("Action Movies")).toBe("action-movies");
     expect(getCategorySlugByTitle("More like this")).toBeNull();
-    expect(getCategoryBySlug("action-movies")?.title).toBe("Untranslated Action Movies");
+    expect(getCategoryBySlug("action-movies")?.title).toBe("Action Movies");
     const suggestions = getSuggestedCategories("vj-mark", 8);
     expect(suggestions).toHaveLength(8);
     expect(suggestions.every((c) => c.slug !== "vj-mark")).toBe(true);

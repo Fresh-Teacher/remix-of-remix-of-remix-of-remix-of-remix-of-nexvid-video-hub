@@ -202,12 +202,8 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
     ...translatedGenres.filter((r) => r.items.length),
     ...tmdbRows,
   ];
-  const trendingTitle = getCategoryBySlug("trending-now")?.title;
-  const trending = tmdbRows.find((r) => r.title === trendingTitle)?.items ?? [];
-  // Jumbotron: live TMDB trending this week (falls back to translated picks if TMDB is down).
-  const liveHeroes = trending.filter((m) => m.backdrop).slice(0, 7);
-  const heroes = liveHeroes.length ? liveHeroes : lugandaItems.filter((m) => m.backdrop).slice(0, 7);
-  const hero = heroes[0] ?? null;
+  const trending = tmdbRows.find((r) => r.title === "Trending now")?.items ?? [];
+  const hero = lugandaItems.find((m) => m.backdrop) ?? trending.find((m) => m.backdrop) ?? null;
   let heroTrailer: string | null = null;
   if (hero) {
     try {
@@ -216,7 +212,7 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
       heroTrailer = (vids.find((x) => x.site === "YouTube" && x.type === "Trailer") ?? vids.find((x) => x.site === "YouTube"))?.key ?? null;
     } catch {}
   }
-  return { hero, heroes, heroTrailer, rows, vjs };
+  return { hero, heroTrailer, rows, vjs };
 });
 
 export const getExplorePage = createServerFn({ method: "GET" })

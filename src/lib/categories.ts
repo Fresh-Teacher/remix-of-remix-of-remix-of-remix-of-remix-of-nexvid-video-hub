@@ -119,10 +119,10 @@ const ALL_CATEGORIES: CategoryDef[] = [
     group: "translated-genre" as const,
     source: { type: "luganda-genre" as const, genreId },
   })),
-  ...CURATED_LISTS.map((item) => ({ ...item, slug: slugifyCategory(item.title), title: `Untranslated ${item.title}` })),
+  ...CURATED_LISTS.map((item) => ({ ...item, slug: slugifyCategory(item.title) })),
   ...GENRES.map(([name, genreId]) => ({
     slug: slugifyCategory(name),
-    title: `Untranslated ${name}`,
+    title: name,
     description: `Browse popular ${name.toLowerCase()} and watch full Luganda translations or trailers.`,
     group: "genre" as const,
     source: { type: "tmdb-genre" as const, genreId },
@@ -131,13 +131,6 @@ const ALL_CATEGORIES: CategoryDef[] = [
 
 const bySlug = new Map(ALL_CATEGORIES.map((c) => [c.slug, c]));
 const slugByTitle = new Map(ALL_CATEGORIES.map((c) => [c.title.toLowerCase(), c.slug]));
-// Untranslated shelves are also findable by their plain name (e.g. "Action Movies").
-for (const c of ALL_CATEGORIES) {
-  if (c.title.startsWith("Untranslated ")) {
-    const plain = c.title.slice("Untranslated ".length).toLowerCase();
-    if (!slugByTitle.has(plain)) slugByTitle.set(plain, c.slug);
-  }
-}
 
 export function getAllCategories(): CategoryDef[] {
   return ALL_CATEGORIES;

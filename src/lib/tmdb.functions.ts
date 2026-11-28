@@ -11,6 +11,7 @@ import {
   listVjs,
   type LugandaMovie,
 } from "./luganda-movies";
+import { TtlCache, createRequestPool } from "./ttl-cache";
 import { GENRES, getAllCategories, getCategoryBySlug } from "./categories";
 
 export type MediaKind = "movie" | "tv";
@@ -38,18 +39,36 @@ export type MediaDetail = MediaCardData & {
 
 const IMG = "https://image.tmdb.org/t/p/";
 
-async function tmdb(path: string, params: Record<string, string> = {}) {
-  const key = process.env["TMDB_API_KEY"];
-  if (!key) throw new Error("Movie data key is missing");
-  const url = new URL(`https://api.themoviedb.org/3${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const headers: Record<string, string> = { accept: "application/json" };
-  if (key.length > 40) headers["Authorization"] = `Bearer ${key}`;
-  else url.searchParams.set("api_key", key);
-  const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`Movie data request failed (${res.status})`);
-  return (await res.json()) as any;
+const upstreamCache = new TtlCache<any>(600_000, 1000);
+
+function createTmdbClient(key: string | undefined) {
+  const run = createRequestPool(6);
+  // This map belongs only to the current request, so concurrent identical reads
+  // can share work without retaining a promise across Worker invocations.
+  const pending = new Map<string, Promise<any>>();
+  return async function tmdb(path: string, params: Record<string, string> = {}) {
+    if (!key) throw new Error("Movie data key is missing");
+    const cacheKey = JSON.stringify([path, Object.entries(params).sort(([a], [b]) => a.localeCompare(b))]);
+    const cached = upstreamCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const existing = pending.get(cacheKey);
+    if (existing) return existing;
+    const request = run(async () => {
+      const url = new URL(`https://api.themoviedb.org/3${path}`);
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+      const headers: Record<string, string> = { accept: "application/json" };
+      if (key.length > 40) headers["Authorization"] = `Bearer ${key}`;
+      else url.searchParams.set("api_key", key);
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`Movie data request failed (${res.status})`);
+      return upstreamCache.set(cacheKey, await res.json());
+    });
+    pending.set(cacheKey, request);
+    try { return await request; }
+    finally { pending.delete(cacheKey); }
+  };
 }
+type TmdbClient = ReturnType<typeof createTmdbClient>;
 
 function toCard(r: any, fallback?: MediaKind): MediaCardData | null {
   const kind: MediaKind = r.media_type === "tv" || r.media_type === "movie" ? r.media_type : (fallback ?? "movie");
@@ -72,7 +91,7 @@ const cards = (list: any[], k?: MediaKind) =>
 
 const lugandaTmdbCache = new Map<string, MediaCardData | null>();
 
-async function resolveOneLuganda(entry: LugandaMovie): Promise<MediaCardData | null> {
+async function resolveOneLuganda(entry: LugandaMovie, tmdb: TmdbClient): Promise<MediaCardData | null> {
   const key = catalogKey(entry);
   if (lugandaTmdbCache.has(key)) {
     const cached = lugandaTmdbCache.get(key);
@@ -104,11 +123,11 @@ async function resolveOneLuganda(entry: LugandaMovie): Promise<MediaCardData | n
   }
 }
 
-async function resolveLugandaBatch(entries: LugandaMovie[]): Promise<MediaCardData[]> {
+async function resolveLugandaBatch(entries: LugandaMovie[], tmdb: TmdbClient): Promise<MediaCardData[]> {
   const out: MediaCardData[] = [];
   const seenIds = new Set<number>();
   for (let i = 0; i < entries.length; i += 6) {
-    const resolved = await Promise.all(entries.slice(i, i + 6).map(resolveOneLuganda));
+    const resolved = await Promise.all(entries.slice(i, i + 6).map((entry) => resolveOneLuganda(entry, tmdb)));
     for (const card of resolved) {
       if (!card || seenIds.has(card.id)) continue;
       seenIds.add(card.id);
@@ -120,12 +139,12 @@ async function resolveLugandaBatch(entries: LugandaMovie[]): Promise<MediaCardDa
 
 // Resolve catalog entries with at most 6 upstream requests in flight. Only settled
 // values are cached globally (never pending promises), so requests stay isolated.
-async function resolveEntries(entries: LugandaMovie[]): Promise<Map<string, MediaCardData>> {
+async function resolveEntries(entries: LugandaMovie[], tmdb: TmdbClient): Promise<Map<string, MediaCardData>> {
   const out = new Map<string, MediaCardData>();
   const unique = [...new Map(entries.map((e) => [catalogKey(e), e])).values()];
   for (let i = 0; i < unique.length; i += 6) {
     const chunk = unique.slice(i, i + 6);
-    const resolved = await Promise.all(chunk.map(resolveOneLuganda));
+    const resolved = await Promise.all(chunk.map((entry) => resolveOneLuganda(entry, tmdb)));
     chunk.forEach((entry, j) => {
       const card = resolved[j];
       if (card) out.set(catalogKey(entry), card);
@@ -145,6 +164,8 @@ function translatedGenreItems(index: Map<string, MediaCardData>, genreId: number
 }
 
 const GENRE_SCAN_PAGE = 24;
+type HomeData = { hero: MediaCardData | null; heroTrailer: string | null; rows: { title: string; items: MediaCardData[] }[]; vjs: ReturnType<typeof listVjs> };
+const homeCache = new TtlCache<HomeData>(300_000, 2);
 
 /** Popularity-led order with seeded jitter, so big titles lead but shelves rotate. */
 export function rankByPopularity<T extends { popularity?: number; rating: number }>(items: T[], seed: number): T[] {
@@ -156,8 +177,12 @@ export function rankByPopularity<T extends { popularity?: number; rating: number
 }
 
 export const getHome = createServerFn({ method: "GET" }).handler(async () => {
-  const vjs = listVjs();
+  const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
   const seed = rotationSeed();
+  const cacheKey = String(seed);
+  const cached = homeCache.get(cacheKey);
+  if (cached) return cached;
+  const vjs = listVjs();
   const featuredEntries = getFeaturedLugandaCatalog(14, seed);
   const vjPicks = new Map(vjs.map((vj) => [vj.name, getRotatingVjPicks(vj.name, 12, seed)]));
   const lists: [string, Promise<any>, MediaKind | undefined][] = [
@@ -172,7 +197,7 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
     ...[...vjPicks.values()].flat(),
   ];
   const [index, results] = await Promise.all([
-    resolveEntries(homeEntries),
+    resolveEntries(homeEntries, tmdb),
     Promise.all(lists.map(([, p]) => p.catch(() => ({ results: [] })))),
   ]);
   const fromCatalog = (entries: LugandaMovie[]) => {
@@ -189,9 +214,21 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
     title: vj.name,
     items: rankByPopularity(fromCatalog(vjPicks.get(vj.name) ?? []), seed + 1),
   }));
+  const translatedByGenre = new Map<number, MediaCardData[]>();
+  const seenTranslated = new Set<number>();
+  for (const entry of allEntries) {
+    const card = index.get(catalogKey(entry)) ?? lugandaTmdbCache.get(catalogKey(entry));
+    if (!card || seenTranslated.has(card.id)) continue;
+    seenTranslated.add(card.id);
+    for (const genreId of card.genreIds ?? []) {
+      const group = translatedByGenre.get(genreId) ?? [];
+      group.push(card);
+      translatedByGenre.set(genreId, group);
+    }
+  }
   const translatedGenres = getAllCategories().flatMap((category) =>
     category.source.type === "luganda-genre"
-      ? [{ title: category.title, items: rankByPopularity(translatedGenreItems(index, category.source.genreId, allEntries), seed + 2).slice(0, 12) }]
+      ? [{ title: category.title, items: rankByPopularity(translatedByGenre.get(category.source.genreId) ?? [], seed + 2).slice(0, 12) }]
       : []);
   const tmdbRows = lists
     .map(([title, , k], i) => ({ title, items: cards(results[i]?.results ?? [], k) }))
@@ -212,12 +249,16 @@ export const getHome = createServerFn({ method: "GET" }).handler(async () => {
       heroTrailer = (vids.find((x) => x.site === "YouTube" && x.type === "Trailer") ?? vids.find((x) => x.site === "YouTube"))?.key ?? null;
     } catch {}
   }
-  return { hero, heroTrailer, rows, vjs };
+  const result = { hero, heroTrailer, rows, vjs };
+  // Do not pin transient upstream outages as a successful homepage.
+  if (index.size > 0 && results.every((r) => r.results?.length > 0)) homeCache.set(cacheKey, result);
+  return result;
 });
 
 export const getExplorePage = createServerFn({ method: "GET" })
   .inputValidator((d) => z.object({ page: z.number().int().min(1).max(500) }).parse(d))
   .handler(async ({ data }) => {
+    const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
     const r = await tmdb("/discover/movie", {
       sort_by: "popularity.desc",
       include_adult: "false",
@@ -242,9 +283,10 @@ export const getVjMoviesPage = createServerFn({ method: "GET" })
       .parse(d),
   )
   .handler(async ({ data }) => {
+    const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
     const limit = data.limit ?? 12;
     const { items: entries, hasMore, total } = getVjCatalog(data.vj, data.offset, limit);
-    const items = await resolveLugandaBatch(entries);
+    const items = await resolveLugandaBatch(entries, tmdb);
     return {
       items,
       nextOffset: hasMore ? data.offset + limit : null,
@@ -262,12 +304,13 @@ export const getCategoryPage = createServerFn({ method: "GET" })
       .parse(d),
   )
   .handler(async ({ data }) => {
+    const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
     const category = getCategoryBySlug(data.slug);
     if (!category) return null;
     const { source } = category;
     if (source.type === "luganda-genre") {
       const { items: entries, hasMore } = getVjCatalog("all", (data.page - 1) * GENRE_SCAN_PAGE, GENRE_SCAN_PAGE);
-      const index = await resolveEntries(entries);
+      const index = await resolveEntries(entries, tmdb);
       return {
         slug: category.slug,
         title: category.title,
@@ -282,7 +325,7 @@ export const getCategoryPage = createServerFn({ method: "GET" })
       const offset = (data.page - 1) * limit;
       const vjKey = source.type === "luganda-all" ? "all" : source.vj;
       const { items: entries, hasMore, total } = getVjCatalog(vjKey, offset, limit);
-      const items = await resolveLugandaBatch(entries);
+      const items = await resolveLugandaBatch(entries, tmdb);
       return {
         slug: category.slug,
         title: category.title,
@@ -316,6 +359,7 @@ export const getCategoryPage = createServerFn({ method: "GET" })
 export const searchMedia = createServerFn({ method: "GET" })
   .inputValidator((d) => z.object({ q: z.string().max(100) }).parse(d))
   .handler(async ({ data }) => {
+    const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
     if (!data.q.trim()) return [] as MediaCardData[];
     const r = await tmdb("/search/multi", { query: data.q, include_adult: "false" });
     return cards(r.results);
@@ -324,6 +368,7 @@ export const searchMedia = createServerFn({ method: "GET" })
 export const getDetail = createServerFn({ method: "GET" })
   .inputValidator((d) => z.object({ kind: z.enum(["movie", "tv"]), id: z.number().int().positive() }).parse(d))
   .handler(async ({ data }): Promise<MediaDetail> => {
+    const tmdb = createTmdbClient(process.env["TMDB_API_KEY"]);
     const r = await tmdb(`/${data.kind}/${data.id}`, { append_to_response: "videos,credits,similar" });
     const base = toCard(r, data.kind);
     if (!base) throw new Error("Movie or series is unavailable");

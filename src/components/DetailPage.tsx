@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { LandscapeCard, LandscapeRow } from "./LandscapeCard";
 import { detailRows, type MediaRow } from "@/lib/media-browsing";
 import { findLugandaStreams } from "@/lib/luganda-movies";
+import { whatsappRequestUrl } from "@/config/contact";
 
 export function DetailPage({ d, rows }: { d: MediaDetail; rows: MediaRow[] }) {
   const ownVj = d.kind === "movie" ? (findLugandaStreams(d.title, d.year)[0]?.vj ?? null) : null;
@@ -50,6 +51,7 @@ export function DetailPage({ d, rows }: { d: MediaDetail; rows: MediaRow[] }) {
                       src={c.photo}
                       alt={c.name}
                       loading="lazy"
+                      decoding="async"
                       className="h-full w-full object-cover"
                     />
                   )}
@@ -122,6 +124,7 @@ function Player({ d }: { d: MediaDetail }) {
                 ref={imgRef}
                 src={img}
                 alt={d.title}
+                decoding="async"
                 onLoad={() => setLoaded(true)}
                 className={`h-full w-full object-cover transition-opacity duration-500 ${loaded ? "opacity-100" : "opacity-0"}`}
               />
@@ -133,8 +136,15 @@ function Player({ d }: { d: MediaDetail }) {
                   className="flex items-center gap-2 rounded-md bg-background/90 px-3 py-2 text-sm text-foreground"
                 >
                   <AlertTriangle className="h-4 w-4 text-primary" />
-                  {mode === "movie" ? "Movie not yet available" : "Trailer not yet available"}
+                  {mode === "movie" ? "The movie is not yet available." : "The trailer is not yet available."}
                 </p>
+              )}
+              {mode !== "idle" && (
+                <Button asChild variant="link" className="h-auto bg-background/90 px-3 py-1">
+                  <a href={whatsappRequestUrl(mode, d.title)} target="_blank" rel="noopener noreferrer">
+                    {mode === "movie" ? "Request Movie" : "Request Trailer"}
+                  </a>
+                </Button>
               )}
               {activeStream && (
                 <span className="rounded-full bg-background/85 px-3 py-1 text-xs font-medium text-foreground">

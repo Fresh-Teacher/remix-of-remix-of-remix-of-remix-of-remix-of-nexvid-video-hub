@@ -1,5 +1,11 @@
 # Requested updates
 
+- [ ] Configure title-specific movie and trailer WhatsApp requests.
+- [ ] Add bounded settled-value TMDB/home caches and indexed catalog lookups.
+- [ ] Isolate carousel updates, memoize cards/shelves, and defer offscreen rendering.
+- [ ] Decouple detail recommendations and optimize image/font delivery.
+- [ ] Verify request flows, performance behavior, and unchanged layouts.
+
 - [x] Add the unique translated movie count to All Translated.
 - [x] Show every VJ, then translated genre shelves, then TMDB lists and genres.
 - [x] Verify category filtering, ordering, and mobile browsing.

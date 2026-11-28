@@ -1,3 +1,4 @@
+import { TtlCache } from "./ttl-cache";
 import rawMovies from "@/data/luganda-movies.json";
 
 export type LugandaMovie = {
@@ -38,14 +39,16 @@ function entryWithPartLabel(entry: LugandaMovie): LugandaMovie {
 }
 
 const indexByTitle = new Map<string, LugandaMovie[]>();
-const entriesWithKey: { key: string; entry: LugandaMovie }[] = [];
+const entriesByYear = new Map<number, { key: string; entry: LugandaMovie }[]>();
 for (const entry of movies) {
   const key = normalizeMovieTitle(entry.title);
   if (!key) continue;
   const list = indexByTitle.get(key);
   if (list) list.push(entry);
   else indexByTitle.set(key, [entry]);
-  entriesWithKey.push({ key, entry });
+  const yearEntries = entriesByYear.get(entry.year) ?? [];
+  yearEntries.push({ key, entry });
+  entriesByYear.set(entry.year, yearEntries);
 }
 
 function dedupeStreams(list: LugandaMovie[]): LugandaMovie[] {
@@ -59,13 +62,26 @@ function dedupeStreams(list: LugandaMovie[]): LugandaMovie[] {
   return out;
 }
 
+const streamCache = new TtlCache<LugandaMovie[]>(3_600_000, 2000);
+const cardInfoCache = new TtlCache<LugandaCardInfo>(3_600_000, 3000);
+
 export function findLugandaStreams(
   title: string,
   year?: string | number | null,
 ): LugandaMovie[] {
   const norm = normalizeMovieTitle(title);
-  if (!norm) return [];
   const parsedYear = typeof year === "number" ? year : Number.parseInt(year ?? "", 10);
+  const key = JSON.stringify([norm, Number.isFinite(parsedYear) ? parsedYear : null]);
+  const cached = streamCache.get(key);
+  if (cached !== undefined) return cached;
+  return streamCache.set(key, matchLugandaStreams(norm, parsedYear));
+}
+
+function matchLugandaStreams(
+  norm: string,
+  parsedYear: number,
+): LugandaMovie[] {
+  if (!norm) return [];
   const candidates = indexByTitle.get(norm);
 
   if (candidates && candidates.length > 0) {
@@ -78,7 +94,8 @@ export function findLugandaStreams(
   }
 
   if (!Number.isFinite(parsedYear)) return [];
-  const prefixMatches = entriesWithKey
+  const prefixMatches = [parsedYear - 1, parsedYear, parsedYear + 1]
+    .flatMap((y) => entriesByYear.get(y) ?? [])
     .filter(
       ({ key, entry }) =>
         key.length >= 6 &&
@@ -99,11 +116,14 @@ export function getLugandaCardInfo(
   year?: string | number | null,
   preferredVj?: string,
 ): LugandaCardInfo {
+  const key = JSON.stringify([normalizeMovieTitle(title), year ?? null, preferredVj ?? null]);
+  const cached = cardInfoCache.get(key);
+  if (cached) return cached;
   const rawVj = preferredVj ?? findLugandaStreams(title, year)[0]?.vj;
-  if (!rawVj) return { translated: false, vj: null };
+  if (!rawVj) return cardInfoCache.set(key, { translated: false, vj: null });
   const vj = rawVj.replace(/\s*·\s*Part\s*\d+$/i, "").trim();
-  if (!vj || vj === "Luganda Translated") return { translated: true, vj: null };
-  return { translated: true, vj };
+  if (!vj || vj === "Luganda Translated") return cardInfoCache.set(key, { translated: true, vj: null });
+  return cardInfoCache.set(key, { translated: true, vj });
 }
 
 export function getLugandaBadgeLabel(
@@ -133,7 +153,18 @@ function uniqueSorted(list: LugandaMovie[], excludeKeys?: Set<string>): LugandaM
   return out;
 }
 
+const sortedCatalogs = new Map<string, LugandaMovie[]>();
+function sortedCatalog(vj: string): LugandaMovie[] {
+  const cached = sortedCatalogs.get(vj);
+  if (cached) return cached;
+  const sorted = uniqueSorted(vj === "all" ? movies : movies.filter((m) => m.vj === vj));
+  sortedCatalogs.set(vj, sorted);
+  return sorted;
+}
+let vjSummaries: VjSummary[] | undefined;
+
 export function listVjs(): VjSummary[] {
+  if (vjSummaries) return vjSummaries;
   const byVj = new Map<string, Set<string>>();
   for (const entry of movies) {
     if (!entry.vj || entry.vj === "Luganda Translated") continue;
@@ -145,10 +176,11 @@ export function listVjs(): VjSummary[] {
     }
     set.add(key);
   }
-  return [...byVj.entries()]
+  vjSummaries = [...byVj.entries()]
     .filter(([, keys]) => keys.size > 0)
     .map(([name, keys]) => ({ name, count: keys.size }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return vjSummaries;
 }
 
 /** Deterministic PRNG so one rotation window serves the same picks everywhere. */
@@ -180,7 +212,7 @@ export function rotationSeed(now = Date.now(), hours = 3): number {
 
 /** A rotating pick of a VJ's titles, drawn from its newest pool of releases. */
 export function getRotatingVjPicks(vj: string, count: number, seed: number, pool = 40): LugandaMovie[] {
-  const unique = uniqueSorted(vj === "all" ? movies : movies.filter((m) => m.vj === vj));
+  const unique = sortedCatalog(vj);
   return seededShuffle(unique.slice(0, pool), seed + vj.length * 7919).slice(0, count);
 }
 
@@ -188,7 +220,7 @@ export function getFeaturedLugandaCatalog(limit: number, seed?: number): Luganda
   const queues = listVjs()
     .slice(0, 6)
     .map((v) => {
-      const list = uniqueSorted(movies.filter((m) => m.vj === v.name));
+      const list = [...sortedCatalog(v.name)];
       return seed === undefined ? list : seededShuffle(list.slice(0, 40), seed + v.name.length);
     });
   const seen = new Set<string>();
@@ -223,8 +255,8 @@ export function getVjCatalog(
   limit: number,
   excludeKeys?: Set<string>,
 ): { items: LugandaMovie[]; hasMore: boolean; total: number } {
-  const filtered = vj === "all" ? movies : movies.filter((m) => m.vj === vj);
-  const unique = uniqueSorted(filtered, excludeKeys);
+  const catalog = sortedCatalog(vj);
+  const unique = excludeKeys ? catalog.filter((entry) => !excludeKeys.has(catalogKey(entry))) : catalog;
   const items = unique.slice(offset, offset + limit);
   return { items, hasMore: offset + limit < unique.length, total: unique.length };
 }
